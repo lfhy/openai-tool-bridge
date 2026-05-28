@@ -39,7 +39,7 @@ func RewriteStreamWithHooks(dst io.Writer, src io.Reader, hooks *StreamDebugHook
 	}
 
 	if state.promptBridgeThinking.Len() > 0 {
-		if reasoning := FinalizePromptBridgeThinking(state.promptBridgeThinking.String()); reasoning != "" {
+		if reasoning := diffPromptBridgeReasoning(&state.emittedReasoning, FinalizePromptBridgeThinking(state.promptBridgeThinking.String())); reasoning != "" {
 			chunk := state.template
 			chunk.Choices = []*ChunkChoice{{
 				Index: 0,
@@ -140,7 +140,7 @@ func processStreamFrame(dst io.Writer, state *streamState, frame sseFrame) (bool
 
 	content, _ := choice.Delta.Content.(string)
 	if content != "" {
-		visibleContent, reasoning, buffering := ConsumeStreamPromptBridgeThinking(content, &state.promptBridgeThinking)
+		visibleContent, reasoning, buffering, completed := ConsumeStreamPromptBridgeThinkingIncremental(content, &state.promptBridgeThinking, &state.emittedReasoning)
 		if reasoning != "" {
 			choice.Delta.ReasoningContent = joinReasoning(choice.Delta.ReasoningContent, reasoning)
 			choice.Delta.Reasoning = choice.Delta.ReasoningContent
@@ -155,6 +155,9 @@ func processStreamFrame(dst io.Writer, state *streamState, frame sseFrame) (bool
 				choice.Delta.Content = visibleContent
 			}
 			content = visibleContent
+		}
+		if completed {
+			state.emittedReasoning = ""
 		}
 	}
 

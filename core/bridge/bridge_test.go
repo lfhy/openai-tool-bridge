@@ -143,6 +143,38 @@ func TestRewriteStream(t *testing.T) {
 	}
 }
 
+func TestRewriteStreamEmitsPromptBridgeReasoningIncrementally(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"id":"chatcmpl-think","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-think","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"content":"Thinking...\n> first line"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-think","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"content":"\n> second line"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-think","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"content":"\n\nvisible answer"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-think","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := RewriteStream(&out, strings.NewReader(stream)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, `"reasoning_content":"first line"`) {
+		t.Fatalf("expected first incremental reasoning chunk, got %s", got)
+	}
+	if !strings.Contains(got, `"reasoning_content":"\nsecond line"`) {
+		t.Fatalf("expected second incremental reasoning delta chunk, got %s", got)
+	}
+	if !strings.Contains(got, `"content":"visible answer"`) {
+		t.Fatalf("expected visible answer after reasoning ends, got %s", got)
+	}
+}
+
 func TestRewriteStreamRecoversMalformedToolCall(t *testing.T) {
 	stream := strings.Join([]string{
 		`data: {"id":"chatcmpl-bad-tool","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,

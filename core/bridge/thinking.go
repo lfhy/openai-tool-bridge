@@ -54,8 +54,61 @@ func ConsumeStreamPromptBridgeThinking(content string, pending *stringBuilder) (
 	return aggregate, "", false
 }
 
+func ConsumeStreamPromptBridgeThinkingIncremental(content string, pending *stringBuilder, emitted *string) (string, string, bool, bool) {
+	aggregate := content
+	if pending != nil && pending.Len() > 0 {
+		aggregate = pending.String() + content
+		pending.Reset()
+	}
+
+	if start := findPromptBridgeThinkingStart(aggregate); start >= 0 {
+		visiblePrefix := aggregate[:start]
+		suffix := aggregate[start:]
+		if reasoning, visibleSuffix, complete := extractPromptBridgeThinking(suffix); complete {
+			return visiblePrefix + visibleSuffix, diffPromptBridgeReasoning(emitted, reasoning), false, true
+		}
+		if looksLikePromptBridgeThinkingPrefix(suffix) {
+			if pending != nil {
+				pending.WriteString(suffix)
+			}
+			return visiblePrefix, diffPromptBridgeReasoning(emitted, finalizePromptBridgeThinking(suffix)), true, false
+		}
+	}
+
+	if looksLikePromptBridgeThinkingPrefix(aggregate) {
+		if pending != nil {
+			pending.WriteString(aggregate)
+		}
+		return "", diffPromptBridgeReasoning(emitted, finalizePromptBridgeThinking(aggregate)), true, false
+	}
+
+	return aggregate, "", false, false
+}
+
 func FinalizePromptBridgeThinking(content string) string {
 	return finalizePromptBridgeThinking(content)
+}
+
+func diffPromptBridgeReasoning(emitted *string, current string) string {
+	current = strings.TrimSpace(current)
+	if current == "" {
+		return ""
+	}
+	if emitted == nil {
+		return current
+	}
+	prev := strings.TrimSpace(*emitted)
+	if prev == "" {
+		*emitted = current
+		return current
+	}
+	if strings.HasPrefix(current, prev) {
+		delta := current[len(prev):]
+		*emitted = current
+		return delta
+	}
+	*emitted = current
+	return current
 }
 
 func looksLikePromptBridgeThinkingPrefix(content string) bool {

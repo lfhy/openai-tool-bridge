@@ -92,6 +92,7 @@ type streamToolCallMeta struct {
 type streamState struct {
 	pseudoToolContent    stringBuilder
 	promptBridgeThinking stringBuilder
+	emittedReasoning     string
 	toolCallMeta         map[int]*streamToolCallMeta
 	collectedToolCalls   []*ToolCall
 	template             ChatCompletionChunk
