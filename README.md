@@ -80,6 +80,7 @@ go run . -c config.toml
 make fmt
 make test
 make build
+make
 make run
 ```
 
