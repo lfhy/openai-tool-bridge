@@ -142,3 +142,38 @@ func TestRewriteStream(t *testing.T) {
 		t.Fatalf("expected done marker, got %s", got)
 	}
 }
+
+func TestRewriteStreamRecoversMalformedToolCall(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"id":"chatcmpl-bad-tool","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-bad-tool","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"content":"<tool_call>"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-bad-tool","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"content":"Write "},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-bad-tool","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"content":"content=<!DOCTYPE html><html>ok</html>"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-bad-tool","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := RewriteStream(&out, strings.NewReader(stream)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, `"<tool_call>`) || strings.Contains(got, `Write content=`) {
+		t.Fatalf("expected malformed tool call to be normalized, got %s", got)
+	}
+	if !strings.Contains(got, `"tool_calls":[`) || !strings.Contains(got, `"name":"Write"`) {
+		t.Fatalf("expected recovered tool_calls output, got %s", got)
+	}
+	if !strings.Contains(got, `DOCTYPE html`) {
+		t.Fatalf("expected recovered content argument in tool call, got %s", got)
+	}
+	if !strings.Contains(got, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("expected tool_calls finish reason, got %s", got)
+	}
+}

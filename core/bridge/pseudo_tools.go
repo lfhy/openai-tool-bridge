@@ -3,8 +3,11 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var malformedToolArgPattern = regexp.MustCompile(`(?i)(^|[\s\r\n\t])([a-z_][a-z0-9_.-]*)=`)
 
 func ExtractPseudoToolCallsFromContent(content string) (string, []*ToolCall, bool) {
 	trimmed := strings.TrimSpace(content)
@@ -57,6 +60,9 @@ func ParsePseudoToolCalls(content string) ([]*ToolCall, bool) {
 		return calls, true
 	}
 	if calls, ok := parseXMLStyleToolCalls(trimmed); ok {
+		return calls, true
+	}
+	if calls, ok := parseMalformedToolCall(trimmed); ok {
 		return calls, true
 	}
 	return parseLegacyFunctionCalls(trimmed)
@@ -242,6 +248,118 @@ func parseXMLStyleToolCalls(content string) ([]*ToolCall, bool) {
 		trimmed = rest
 	}
 	return calls, len(calls) > 0
+}
+
+func parseMalformedToolCall(content string) ([]*ToolCall, bool) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" || !strings.HasPrefix(strings.ToLower(trimmed), "<tool_call>") {
+		return nil, false
+	}
+	hasClosingTag := strings.Contains(strings.ToLower(trimmed), "</tool_call>")
+	body := strings.TrimSpace(trimmed[len("<tool_call>"):])
+	body = strings.TrimSpace(strings.TrimSuffix(body, "</tool_call>"))
+	if body == "" {
+		return nil, false
+	}
+	if strings.HasPrefix(strings.ToLower(body), "<function=") {
+		return nil, false
+	}
+
+	name, rest, ok := consumeMalformedToolName(body)
+	if !ok {
+		return nil, false
+	}
+	if !hasClosingTag && !strings.Contains(rest, "=") {
+		return nil, false
+	}
+	args := parseMalformedToolArguments(rest)
+	rawArgs, err := json.Marshal(args)
+	if err != nil {
+		return nil, false
+	}
+	return []*ToolCall{{
+		Index: 0,
+		Type:  "function",
+		Function: &ToolFunction{
+			Name:      name,
+			Arguments: string(rawArgs),
+		},
+	}}, true
+}
+
+func consumeMalformedToolName(body string) (string, string, bool) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return "", "", false
+	}
+	end := 0
+	for end < len(body) {
+		ch := body[end]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '.' || ch == '-' {
+			end++
+			continue
+		}
+		break
+	}
+	if end == 0 {
+		return "", "", false
+	}
+	return strings.TrimSpace(body[:end]), strings.TrimSpace(body[end:]), true
+}
+
+func parseMalformedToolArguments(rest string) map[string]any {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return map[string]any{}
+	}
+	matches := malformedToolArgPattern.FindAllStringSubmatchIndex(rest, -1)
+	if len(matches) == 0 {
+		return map[string]any{
+			"input": rest,
+		}
+	}
+
+	args := make(map[string]any, len(matches))
+	leading := strings.TrimSpace(rest[:matches[0][0]])
+	if leading != "" {
+		args["input"] = leading
+	}
+	for index, match := range matches {
+		keyStart := match[4]
+		keyEnd := match[5]
+		valueStart := match[1]
+		if valueStart < 0 || valueStart > len(rest) {
+			continue
+		}
+		valueEnd := len(rest)
+		if index+1 < len(matches) {
+			valueEnd = matches[index+1][0]
+		}
+		key := strings.TrimSpace(rest[keyStart:keyEnd])
+		if key == "" {
+			continue
+		}
+		args[key] = normalizeMalformedToolValue(rest[valueStart:valueEnd])
+	}
+	if len(args) == 0 {
+		args["input"] = rest
+	}
+	return args
+}
+
+func normalizeMalformedToolValue(raw string) any {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if (strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`)) || (strings.HasPrefix(value, `'`) && strings.HasSuffix(value, `'`)) {
+		value = strings.TrimSpace(value[1 : len(value)-1])
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(value), &decoded); err == nil {
+		return decoded
+	}
+	return value
 }
 
 func parseXMLStyleToolCallBlock(block string, index int) (*ToolCall, bool) {
