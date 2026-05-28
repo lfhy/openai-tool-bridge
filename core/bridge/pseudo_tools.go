@@ -75,6 +75,9 @@ func parsePseudoToolCalls(content string, allowMalformed bool) ([]*ToolCall, boo
 		return calls, true
 	}
 	if allowMalformed {
+		if calls, ok := parseMalformedXMLStyleToolCall(trimmed); ok {
+			return calls, true
+		}
 		if calls, ok := parseMalformedToolCall(trimmed); ok {
 			return calls, true
 		}
@@ -320,6 +323,57 @@ func parseMalformedToolCall(content string) ([]*ToolCall, bool) {
 	}}, true
 }
 
+func parseMalformedXMLStyleToolCall(content string) ([]*ToolCall, bool) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" || !strings.HasPrefix(strings.ToLower(trimmed), "<tool_call>") {
+		return nil, false
+	}
+	body := strings.TrimSpace(trimmed[len("<tool_call>"):])
+	if body == "" {
+		return nil, false
+	}
+
+	funcName, rest, ok := consumeXMLFunctionOpen(body)
+	if !ok {
+		return nil, false
+	}
+
+	params := make(map[string]any)
+	consumedParam := false
+	for {
+		rest = strings.TrimSpace(rest)
+		switch {
+		case rest == "":
+			args, ok := marshalMalformedXMLStyleArguments(params)
+			if !ok {
+				return nil, false
+			}
+			return []*ToolCall{{
+				Index: 0,
+				Type:  "function",
+				Function: &ToolFunction{
+					Name:      strings.TrimSpace(funcName),
+					Arguments: args,
+				},
+			}}, consumedParam
+		case strings.HasPrefix(strings.ToLower(rest), "</function>"):
+			rest = rest[len("</function>"):]
+			continue
+		case strings.HasPrefix(strings.ToLower(rest), "</tool_call>"):
+			rest = rest[len("</tool_call>"):]
+			continue
+		}
+
+		key, value, nextRest, ok := consumeMalformedXMLParameter(rest)
+		if !ok {
+			return nil, false
+		}
+		params[key] = value
+		consumedParam = true
+		rest = nextRest
+	}
+}
+
 func consumeMalformedToolName(body string) (string, string, bool) {
 	body = strings.TrimSpace(body)
 	if body == "" {
@@ -395,6 +449,34 @@ func normalizeMalformedToolValue(raw string) any {
 	return value
 }
 
+func consumeMalformedXMLParameter(content string) (string, string, string, bool) {
+	content = strings.TrimSpace(content)
+	const prefix = "<parameter="
+	if !strings.HasPrefix(strings.ToLower(content), prefix) {
+		return "", "", content, false
+	}
+	nameEnd := strings.Index(content, ">")
+	if nameEnd < 0 {
+		return "", "", content, false
+	}
+	name := strings.TrimSpace(content[len(prefix):nameEnd])
+	if name == "" {
+		return "", "", content, false
+	}
+	body := content[nameEnd+1:]
+	lowerBody := strings.ToLower(body)
+	if valueEnd := strings.Index(lowerBody, "</parameter>"); valueEnd >= 0 {
+		return name, strings.TrimSpace(body[:valueEnd]), body[valueEnd+len("</parameter>"):], true
+	}
+	if functionCloseIndex := strings.Index(lowerBody, "</function>"); functionCloseIndex >= 0 {
+		return name, strings.TrimSpace(body[:functionCloseIndex]), body[functionCloseIndex:], true
+	}
+	if toolCallCloseIndex := strings.Index(lowerBody, "</tool_call>"); toolCallCloseIndex >= 0 {
+		return name, strings.TrimSpace(body[:toolCallCloseIndex]), body[toolCallCloseIndex:], true
+	}
+	return name, strings.TrimSpace(body), "", true
+}
+
 func parseXMLStyleToolCallBlock(block string, index int) (*ToolCall, bool) {
 	block = strings.TrimSpace(block)
 	if !strings.HasPrefix(strings.ToLower(block), "<function=") {
@@ -461,6 +543,116 @@ func normalizeXMLStyleArguments(params map[string]any) any {
 		return decoded
 	}
 	return params
+}
+
+func marshalMalformedXMLStyleArguments(params map[string]any) (string, bool) {
+	argsValue := normalizeMalformedXMLStyleArguments(params)
+	args, err := json.Marshal(argsValue)
+	if err != nil {
+		return "", false
+	}
+	return string(args), true
+}
+
+func normalizeMalformedXMLStyleArguments(params map[string]any) any {
+	if len(params) != 1 {
+		return params
+	}
+	for key, value := range params {
+		lowerKey := strings.ToLower(strings.TrimSpace(key))
+		if lowerKey != "arguments_json" && lowerKey != "args_json" {
+			return params
+		}
+		raw := strings.TrimSpace(fmt.Sprint(value))
+		if raw == "" {
+			return map[string]any{}
+		}
+		decoded, ok := decodePossiblyPartialJSON(raw)
+		if !ok {
+			return params
+		}
+		return decoded
+	}
+	return params
+}
+
+func decodePossiblyPartialJSON(raw string) (any, bool) {
+	var decoded any
+	if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+		return decoded, true
+	}
+	repaired := repairPartialJSON(raw)
+	if repaired == raw {
+		return nil, false
+	}
+	if err := json.Unmarshal([]byte(repaired), &decoded); err != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
+func repairPartialJSON(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return raw
+	}
+	switch raw[0] {
+	case '{', '[', '"':
+	default:
+		return raw
+	}
+
+	var builder strings.Builder
+	stack := make([]byte, 0, 8)
+	inString := false
+	escape := false
+	for index := 0; index < len(raw); index++ {
+		ch := raw[index]
+		builder.WriteByte(ch)
+		if inString {
+			if escape {
+				escape = false
+				continue
+			}
+			if ch == '\\' {
+				escape = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			stack = append(stack, '}')
+		case '[':
+			stack = append(stack, ']')
+		case '}', ']':
+			if len(stack) > 0 && stack[len(stack)-1] == ch {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+
+	repaired := strings.TrimRight(builder.String(), " \r\n\t")
+	if escape && strings.HasSuffix(repaired, `\`) {
+		repaired = repaired[:len(repaired)-1]
+	}
+	if inString {
+		repaired += `"`
+	}
+	repaired = strings.TrimRight(repaired, " \r\n\t")
+	for strings.HasSuffix(repaired, ",") || strings.HasSuffix(repaired, ":") {
+		repaired = strings.TrimRight(strings.TrimSuffix(strings.TrimSuffix(repaired, ","), ":"), " \r\n\t")
+	}
+	for index := len(stack) - 1; index >= 0; index-- {
+		repaired += string(stack[index])
+	}
+	return repaired
 }
 
 func consumeXMLFunctionOpen(content string) (string, string, bool) {

@@ -98,3 +98,16 @@ make run
 go test ./...
 go build ./...
 ```
+
+## 发布
+
+- 推送符合 `v*` 的 tag 时会触发 GitHub Actions 发布流程，例如 `v0.0.1`
+- workflow 会先执行 `go test ./...`
+- 构建并发布以下平台二进制压缩包：
+  - `linux/amd64`
+  - `linux/arm64`
+  - `windows/amd64`
+  - `windows/arm64`
+  - `darwin/amd64`
+  - `darwin/arm64`
+- Release 附件里还会包含 `checksums.txt`

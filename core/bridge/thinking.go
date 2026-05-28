@@ -146,14 +146,10 @@ func extractPromptBridgeThinking(content string) (string, string, bool) {
 		return "", "", false
 	}
 	body := trimmed[len(promptBridgeThinkingPrefix):]
-	end := strings.Index(body, "\n\n")
-	if end < 0 {
-		if toolStart := FindPseudoToolCallStart(body); toolStart >= 0 {
-			return normalizePromptBridgeThinking(body[:toolStart]), body[toolStart:], true
-		}
-		return "", "", false
+	if end := findPromptBridgeThinkingEnd(body); end >= 0 {
+		return normalizePromptBridgeThinking(body[:end]), body[end:], true
 	}
-	return normalizePromptBridgeThinking(body[:end]), body[end+2:], true
+	return "", "", false
 }
 
 func finalizePromptBridgeThinking(content string) string {
@@ -162,12 +158,51 @@ func finalizePromptBridgeThinking(content string) string {
 		return ""
 	}
 	body := trimmed[len(promptBridgeThinkingPrefix):]
-	if end := strings.Index(body, "\n\n"); end >= 0 {
+	if end := findPromptBridgeThinkingEnd(body); end >= 0 {
 		body = body[:end]
-	} else if toolStart := FindPseudoToolCallStart(body); toolStart >= 0 {
-		body = body[:toolStart]
 	}
 	return normalizePromptBridgeThinking(body)
+}
+
+func findPromptBridgeThinkingEnd(body string) int {
+	searchFrom := 0
+	for {
+		offset := strings.Index(body[searchFrom:], "\n\n")
+		if offset < 0 {
+			break
+		}
+		candidate := searchFrom + offset
+		remainder := strings.TrimLeft(body[candidate+2:], " \r\t")
+		if strings.HasPrefix(remainder, ">") {
+			searchFrom = candidate + 2
+			continue
+		}
+		return candidate + 2
+	}
+	if toolStart := findUnquotedPseudoToolCallStart(body); toolStart >= 0 {
+		return toolStart
+	}
+	return -1
+}
+
+func findUnquotedPseudoToolCallStart(content string) int {
+	lineStart := 0
+	for lineStart < len(content) {
+		lineEnd := strings.Index(content[lineStart:], "\n")
+		if lineEnd < 0 {
+			lineEnd = len(content) - lineStart
+		}
+		line := content[lineStart : lineStart+lineEnd]
+		trimmed := strings.TrimLeft(line, "\r\t ")
+		if trimmed != "" && !strings.HasPrefix(trimmed, ">") {
+			prefixLen := len(line) - len(trimmed)
+			if start := FindPseudoToolCallStart(trimmed); start >= 0 && strings.TrimSpace(trimmed[:start]) == "" {
+				return lineStart + prefixLen + start
+			}
+		}
+		lineStart += lineEnd + 1
+	}
+	return -1
 }
 
 func normalizePromptBridgeThinking(raw string) string {

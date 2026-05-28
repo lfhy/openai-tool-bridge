@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Tests
+        run: go test ./...
+
+      - name: Build Release Archives
+        env:
+          APP_NAME: openai-tool-bridge
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME}"
+          mkdir -p dist
+
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "windows amd64"
+            "windows arm64"
+            "darwin amd64"
+            "darwin arm64"
+          )
+
+          for target in "${targets[@]}"; do
+            read -r goos goarch <<<"${target}"
+
+            ext=""
+            if [[ "${goos}" == "windows" ]]; then
+              ext=".exe"
+            fi
+
+            workdir="dist/${APP_NAME}_${version}_${goos}_${goarch}"
+            archive_base="${APP_NAME}_${version}_${goos}_${goarch}"
+
+            mkdir -p "${workdir}"
+            GOOS="${goos}" GOARCH="${goarch}" go build -trimpath -ldflags="-s -w" -o "${workdir}/${APP_NAME}${ext}" .
+            cp README.md README.en.md config.example.toml "${workdir}/"
+
+            if [[ "${goos}" == "windows" ]]; then
+              (
+                cd dist
+                zip -rq "${archive_base}.zip" "${archive_base}"
+              )
+            else
+              tar -C dist -czf "dist/${archive_base}.tar.gz" "${archive_base}"
+            fi
+
+            rm -rf "${workdir}"
+          done
+
+          (
+            cd dist
+            sha256sum ./* > checksums.txt
+          )
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*

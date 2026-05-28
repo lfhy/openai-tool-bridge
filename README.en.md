@@ -96,3 +96,16 @@ make run
 go test ./...
 go build ./...
 ```
+
+## Release
+
+- Pushing a tag that matches `v*` triggers the GitHub Actions release workflow, for example `v0.0.1`
+- The workflow runs `go test ./...` before packaging
+- It builds and publishes compressed binaries for:
+  - `linux/amd64`
+  - `linux/arm64`
+  - `windows/amd64`
+  - `windows/arm64`
+  - `darwin/amd64`
+  - `darwin/arm64`
+- The release assets also include `checksums.txt`

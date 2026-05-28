@@ -2,3 +2,4 @@
 openai-tool-bridge
 dist/
 config.toml
+run.log

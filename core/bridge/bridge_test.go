@@ -96,6 +96,43 @@ func TestNormalizeNonStreamResponse(t *testing.T) {
 	}
 }
 
+func TestNormalizeNonStreamResponseRecoversTruncatedXMLToolCall(t *testing.T) {
+	raw := []byte(`{
+		"id":"chatcmpl-cutoff",
+		"object":"chat.completion",
+		"created":1,
+		"model":"demo",
+		"choices":[
+			{
+				"index":0,
+				"message":{
+					"role":"assistant",
+					"content":"<tool_call>\n<function=Write>\n<parameter=arguments_json>{\"file_path\":\"index.html\",\"content\":\"<!DOCTYPE html><html>ok"
+				},
+				"finish_reason":"stop"
+			}
+		]
+	}`)
+
+	normalized, err := NormalizeNonStreamResponse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := string(normalized)
+	if strings.Contains(got, `<tool_call>`) {
+		t.Fatalf("expected truncated xml tool call to be normalized, got %s", got)
+	}
+	if !strings.Contains(got, `"tool_calls":[`) || !strings.Contains(got, `"name":"Write"`) {
+		t.Fatalf("expected normalized tool call, got %s", got)
+	}
+	if !strings.Contains(got, `\"file_path\":\"index.html\"`) || !strings.Contains(got, `\\u003c!DOCTYPE html\\u003e\\u003chtml\\u003eok`) {
+		t.Fatalf("expected recovered content argument, got %s", got)
+	}
+	if !strings.Contains(got, `"finish_reason":"stop"`) {
+		t.Fatalf("expected original finish reason to remain stop, got %s", got)
+	}
+}
+
 func TestRewriteStream(t *testing.T) {
 	stream := strings.Join([]string{
 		`data: {"id":"chatcmpl-bridge","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
@@ -207,5 +244,67 @@ func TestRewriteStreamRecoversMalformedToolCall(t *testing.T) {
 	}
 	if !strings.Contains(got, `"finish_reason":"tool_calls"`) {
 		t.Fatalf("expected tool_calls finish reason, got %s", got)
+	}
+}
+
+func TestRewriteStreamRecoversTruncatedXMLToolCall(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"id":"chatcmpl-cutoff-xml","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-cutoff-xml","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"content":"<tool_call>\n<function=Write>\n<parameter=arguments_json>{\"file_path\":\"index.html\",\"content\":\"<!DOCTYPE html><html>ok"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-cutoff-xml","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := RewriteStream(&out, strings.NewReader(stream)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, `"<tool_call>`) {
+		t.Fatalf("expected truncated xml tool call to be normalized, got %s", got)
+	}
+	if !strings.Contains(got, `"tool_calls":[`) || !strings.Contains(got, `"name":"Write"`) {
+		t.Fatalf("expected normalized tool call, got %s", got)
+	}
+	if !strings.Contains(got, `\"file_path\":\"index.html\"`) || !strings.Contains(got, `\\u003c!DOCTYPE html\\u003e\\u003chtml\\u003eok`) {
+		t.Fatalf("expected recovered content argument, got %s", got)
+	}
+	if !strings.Contains(got, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("expected tool_calls finish reason, got %s", got)
+	}
+}
+
+func TestRewriteStreamIgnoresQuotedToolCallExampleInsideThinking(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"id":"chatcmpl-quoted-example","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-quoted-example","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{"content":"Thinking...\n> Let me prepare the final tool call.\n>\n> <tool_call>\n> <function=Write>\n> <parameter=arguments_json>{\"file_path\":\"example.html\"}\n> </parameter>\n> </function>\n> </tool_call>\n>\n> The block above is only an example.\n\n<tool_call>\n<function=Write>\n<parameter=arguments_json>{\"file_path\":\"real.html\",\"content\":\"ok\"}</parameter>\n</function>\n</tool_call>"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-quoted-example","object":"chat.completion.chunk","created":1,"model":"demo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		``,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+
+	var out bytes.Buffer
+	if err := RewriteStream(&out, strings.NewReader(stream)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, `"reasoning_content":"Let me prepare the final tool call.`) {
+		t.Fatalf("expected quoted example to stay in reasoning, got %s", got)
+	}
+	if !strings.Contains(got, `\"file_path\":\"real.html\"`) || !strings.Contains(got, `"name":"Write"`) {
+		t.Fatalf("expected real tool call to be normalized, got %s", got)
+	}
+	if strings.Count(got, `"tool_calls":[`) != 1 {
+		t.Fatalf("expected exactly one parsed tool_calls chunk, got %s", got)
+	}
+	if strings.Contains(got, `"<tool_call>`) {
+		t.Fatalf("expected raw tool call content to be suppressed, got %s", got)
 	}
 }
