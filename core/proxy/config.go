@@ -16,6 +16,7 @@ import (
 type Config struct {
 	ConfigPath      string
 	ListenAddr      string
+	Debug           bool
 	UpstreamBaseURL string
 	UpstreamModel   string
 	UpstreamAPIKey  string
@@ -33,6 +34,7 @@ func LoadConfig() (Config, error) {
 	var cfg Config
 	configPathPtr := lfhyflag.String("c", defaultConfigPath(), "config file path")
 	lfhyflag.StringConfigVar(&cfg.ListenAddr, "listen", "server", "listen", ":8080", "listen address")
+	lfhyflag.BoolConfigVar(&cfg.Debug, "debug", "server", "debug", false, "enable debug logging")
 	lfhyflag.StringConfigVar(&cfg.UpstreamBaseURL, "upstream-base-url", "upstream", "base_url", "", "upstream base url")
 	lfhyflag.StringConfigVar(&cfg.UpstreamModel, "upstream-model", "upstream", "model", "", "upstream model override")
 	lfhyflag.StringConfigVar(&cfg.UpstreamAPIKey, "upstream-api-key", "upstream", "api_key", "", "upstream api key override")

@@ -27,6 +27,7 @@ Example:
 ```toml
 [server]
 listen = ":8080"
+debug = false
 
 [upstream]
 base_url = "https://api.openai.com/v1"
@@ -59,6 +60,12 @@ Runtime key passthrough:
 - Set `auth_mode = "passthrough"` to forward client `Authorization` directly
 - Use `prefer_client` if you want to prefer the client header and fall back to configured keys
 
+Debug logging:
+
+- Start with `-debug`
+- Or set `server.debug = true` in the config
+- When enabled, the proxy logs raw requests, bridged requests, upstream attempts, raw SSE frames, and rewritten SSE frames for troubleshooting partial rewrites
+
 ## Run
 
 ```bash
@@ -70,6 +77,7 @@ Or:
 
 ```bash
 go run . -c config.toml
+go run . -c config.toml -debug
 ```
 
 ## Common Commands

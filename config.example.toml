@@ -1,5 +1,6 @@
 [server]
 listen = ":8080"
+debug = false
 
 [upstream]
 base_url = "https://api.openai.com/v1"

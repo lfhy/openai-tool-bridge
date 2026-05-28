@@ -18,7 +18,7 @@ func main() {
 		log.Fatal(err)
 	}
 	server := proxy.NewServer(cfg, client)
-	log.Printf("openai-tool-bridge listening on %s", cfg.ListenAddr)
+	log.Printf("openai-tool-bridge listening on %s debug=%t", cfg.ListenAddr, cfg.Debug)
 	if err := http.ListenAndServe(cfg.ListenAddr, server.Handler()); err != nil {
 		log.Fatal(err)
 	}

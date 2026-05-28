@@ -18,6 +18,7 @@ type Server struct {
 	client *http.Client
 	mux    *http.ServeMux
 	rr     atomic.Uint64
+	debug  *debugLogger
 }
 
 func NewServer(cfg Config, client *http.Client) *Server {
@@ -28,6 +29,7 @@ func NewServer(cfg Config, client *http.Client) *Server {
 		cfg:    cfg,
 		client: client,
 		mux:    http.NewServeMux(),
+		debug:  newDebugLogger(cfg.Debug),
 	}
 	s.routes()
 	return s
@@ -51,6 +53,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.UpstreamModel != "" {
+		s.debug.Printf("serving static /v1/models response for configured model=%q", s.cfg.UpstreamModel)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"object": "list",
 			"data": []map[string]any{
@@ -63,6 +66,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	s.debug.Printf("proxying /v1/models to upstream because no upstream.model is configured")
 	s.proxyPassthrough(w, r)
 }
 
@@ -87,6 +91,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	s.debug.DumpBytes("client request body", body)
 
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -102,7 +107,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.UpstreamModel != "" {
 		payload["model"] = s.cfg.UpstreamModel
 	}
-	if _, err := bridge.ApplyToolPromptBridge(payload); err != nil {
+	changed, err := bridge.ApplyToolPromptBridge(payload)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": map[string]any{
 				"message": err.Error(),
@@ -111,6 +117,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	s.debug.Printf("tool prompt bridge applied=%t", changed)
 
 	stream, _ := payload["stream"].(bool)
 	upstreamBody, err := json.Marshal(payload)
@@ -123,6 +130,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	s.debug.DumpBytes("upstream request body", upstreamBody)
 
 	resp, err := s.doUpstream(r, http.MethodPost, r.URL.Path, "application/json", upstreamBody)
 	if err != nil {
@@ -137,9 +145,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= http.StatusBadRequest {
+		raw, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			s.debug.Printf("failed reading upstream error body: %v", readErr)
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"error": map[string]any{
+					"message": readErr.Error(),
+					"type":    "upstream_error",
+				},
+			})
+			return
+		}
+		s.debug.Printf("upstream returned error status=%d", resp.StatusCode)
+		s.debug.DumpBytes("upstream error body", raw)
 		copyHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		_, _ = w.Write(raw)
 		return
 	}
 
@@ -148,8 +169,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		flusher, _ := w.(http.Flusher)
-		writer := &flushWriter{writer: w, flusher: flusher}
-		if err := bridge.RewriteStream(writer, resp.Body); err != nil {
+		writer := io.Writer(&flushWriter{writer: w, flusher: flusher})
+		if s.debug.Enabled() {
+			writer = &debugWriter{writer: writer, logger: s.debug, label: "stream downstream frame"}
+		}
+		hooks := &bridge.StreamDebugHooks{}
+		if s.debug.Enabled() {
+			hooks.OnInputFrame = func(raw string) {
+				s.debug.DumpText("stream upstream frame", raw)
+			}
+		}
+		if err := bridge.RewriteStreamWithHooks(writer, resp.Body, hooks); err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{
 				"error": map[string]any{
 					"message": err.Error(),
@@ -170,6 +200,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	s.debug.DumpBytes("upstream raw response body", raw)
 	normalized, err := bridge.NormalizeNonStreamResponse(raw)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{
@@ -180,6 +211,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	s.debug.DumpBytes("downstream normalized response body", normalized)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(normalized)
@@ -196,6 +228,9 @@ func (s *Server) proxyPassthrough(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if len(body) > 0 {
+		s.debug.DumpBytes("passthrough request body", body)
+	}
 	resp, err := s.doUpstream(r, r.Method, r.URL.Path, r.Header.Get("Content-Type"), body)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{
@@ -207,6 +242,7 @@ func (s *Server) proxyPassthrough(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	s.debug.Printf("passthrough upstream status=%d path=%s", resp.StatusCode, r.URL.Path)
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
@@ -220,7 +256,8 @@ func (s *Server) doUpstream(r *http.Request, method string, requestPath string, 
 
 	var lastErr error
 	for index, authHeader := range attempts {
-		req, err := http.NewRequestWithContext(r.Context(), method, joinUpstreamURL(s.cfg.UpstreamBaseURL, requestPath), strings.NewReader(string(body)))
+		targetURL := joinUpstreamURL(s.cfg.UpstreamBaseURL, requestPath)
+		req, err := http.NewRequestWithContext(r.Context(), method, targetURL, strings.NewReader(string(body)))
 		if err != nil {
 			return nil, err
 		}
@@ -233,12 +270,15 @@ func (s *Server) doUpstream(r *http.Request, method string, requestPath string, 
 		if authHeader != "" {
 			req.Header.Set("Authorization", authHeader)
 		}
+		s.debug.Printf("upstream attempt=%d method=%s url=%s auth=%s", index+1, method, targetURL, maskAuthorization(authHeader))
 
 		resp, err := s.client.Do(req)
 		if err != nil {
+			s.debug.Printf("upstream attempt=%d transport error: %v", index+1, err)
 			lastErr = err
 			continue
 		}
+		s.debug.Printf("upstream attempt=%d status=%d", index+1, resp.StatusCode)
 		if shouldFailoverStatus(resp.StatusCode) && index < len(attempts)-1 {
 			lastErr = fmt.Errorf("upstream status %d", resp.StatusCode)
 			_, _ = io.Copy(io.Discard, resp.Body)

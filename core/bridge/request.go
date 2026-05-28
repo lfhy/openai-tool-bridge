@@ -143,16 +143,22 @@ func promptRole(role string) bool {
 
 func buildPrompt(tools []*ToolDefinition) string {
 	if len(tools) == 0 {
-		return `You are running in tool prompt bridge mode. Do not use native tool_calls or tool messages.
+		return `你当前运行在工具提示桥接模式。不要使用原生 tool_calls / tool 消息协议。
 
-If you need to call a tool, output one or more XML blocks exactly like this:
+如果需要调用工具，请直接输出一个或多个如下 XML 标签块，不要放进 Markdown 代码块，也不要额外解释：
 <tool_call>
-<function=tool_name>
-<parameter=arguments_json>{"arg":"value"}</parameter>
+<function=工具名称>
+<parameter=arguments_json>{"参数名":"参数值"}</parameter>
 </function>
 </tool_call>
 
-If no tool is needed, answer normally. If later user messages contain <|tool_result|>...</|tool_result|>, treat them as tool execution results and continue the task.`
+特别注意：
+1. 必须严格输出合法 XML 结构，不能输出 <tool_call>Write content=... 这类格式。
+2. 所有参数都必须放进 <parameter=...>...</parameter> 标签。
+3. 如果参数里包含长文本、换行、HTML、CSS、JS、Markdown、JSON 或尖括号，请优先使用单个 <parameter=arguments_json>...</parameter>，并保证里面是合法 JSON。
+4. 不要把原始文件内容直接写在 XML 标签外面。
+
+如果不需要调用工具，直接正常回答。后续 user 消息里若出现 <|tool_result|>...</|tool_result|>，那就是工具执行结果，你需要基于结果继续完成任务。`
 	}
 
 	sections := make([]string, 0, len(tools))
@@ -166,23 +172,29 @@ If no tool is needed, answer normally. If later user messages contain <|tool_res
 		}
 		description := strings.TrimSpace(tool.Function.Description)
 		if description == "" {
-			description = "No additional description."
+			description = "无额外说明"
 		}
-		sections = append(sections, fmt.Sprintf("### %s\n%s\nParameter JSON Schema:\n%s", strings.TrimSpace(tool.Function.Name), description, params))
+		sections = append(sections, fmt.Sprintf("### %s\n%s\n参数 JSON Schema:\n%s", strings.TrimSpace(tool.Function.Name), description, params))
 	}
 
-	return fmt.Sprintf(`You are running in tool prompt bridge mode. The target model does not support native tool_calls or tool messages.
+	return fmt.Sprintf(`你当前运行在工具提示桥接模式。目标模型不支持原生 tool_calls / tool 消息协议。
 
-If you need to call a tool, output one or more XML blocks exactly like this:
+如果需要调用工具，请直接输出一个或多个如下 XML 标签块，不要放进 Markdown 代码块，也不要额外解释：
 <tool_call>
-<function=tool_name>
-<parameter=arguments_json>{"arg":"value"}</parameter>
+<function=工具名称>
+<parameter=arguments_json>{"参数名":"参数值"}</parameter>
 </function>
 </tool_call>
 
-If no tool is needed, answer normally. If later user messages contain <|tool_result|>...</|tool_result|>, treat them as tool execution results and continue the task.
+特别注意：
+1. 必须严格输出合法 XML 结构，不能输出 <tool_call>Write content=... 这类格式。
+2. 所有参数都必须放进 <parameter=...>...</parameter> 标签。
+3. 如果参数里包含长文本、换行、HTML、CSS、JS、Markdown、JSON 或尖括号，请优先使用单个 <parameter=arguments_json>...</parameter>，并保证里面是合法 JSON。
+4. 不要把原始文件内容直接写在 XML 标签外面。
 
-Available tools:
+如果不需要调用工具，直接正常回答。后续 user 消息里若出现 <|tool_result|>...</|tool_result|>，那就是工具执行结果，你需要基于结果继续完成任务。
+
+可用工具如下：
 
 %s`, strings.Join(sections, "\n\n"))
 }
@@ -200,7 +212,18 @@ func prependText(content any, text string) any {
 			return text
 		}
 		return text + "\n\n" + value
+	case []any:
+		items := make([]any, 0, len(value)+1)
+		items = append(items, map[string]any{"type": "text", "text": text})
+		items = append(items, value...)
+		return items
 	default:
+		if items, ok := contentArray(content); ok {
+			res := make([]any, 0, len(items)+1)
+			res = append(res, map[string]any{"type": "text", "text": text})
+			res = append(res, items...)
+			return res
+		}
 		existing := extractContentText(content)
 		if existing == "" {
 			return text
@@ -222,7 +245,18 @@ func appendText(content any, text string) any {
 			return text
 		}
 		return value + "\n\n" + text
+	case []any:
+		items := make([]any, 0, len(value)+1)
+		items = append(items, value...)
+		items = append(items, map[string]any{"type": "text", "text": text})
+		return items
 	default:
+		if items, ok := contentArray(content); ok {
+			res := make([]any, 0, len(items)+1)
+			res = append(res, items...)
+			res = append(res, map[string]any{"type": "text", "text": text})
+			return res
+		}
 		existing := extractContentText(content)
 		if existing == "" {
 			return text
@@ -237,9 +271,43 @@ func extractContentText(content any) string {
 		return ""
 	case string:
 		return value
+	case []any:
+		return extractContentTextFromItems(value)
 	default:
+		if items, ok := contentArray(content); ok {
+			return extractContentTextFromItems(items)
+		}
 		return strings.TrimSpace(marshalString(value))
 	}
+}
+
+func contentArray(content any) ([]any, bool) {
+	data, err := marshal(content)
+	if err != nil {
+		return nil, false
+	}
+	var items []any
+	if err := unmarshal(data, &items); err != nil {
+		return nil, false
+	}
+	return items, true
+}
+
+func extractContentTextFromItems(items []any) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		block, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(fmt.Sprint(block["type"]))) {
+		case "text":
+			parts = append(parts, strings.TrimSpace(fmt.Sprint(block["text"])))
+		case "image_url":
+			parts = append(parts, "[image]")
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func encodeAssistantToolCalls(calls []*ToolCall) (string, map[string]string) {

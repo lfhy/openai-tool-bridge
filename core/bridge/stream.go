@@ -9,6 +9,10 @@ import (
 )
 
 func RewriteStream(dst io.Writer, src io.Reader) error {
+	return RewriteStreamWithHooks(dst, src, nil)
+}
+
+func RewriteStreamWithHooks(dst io.Writer, src io.Reader, hooks *StreamDebugHooks) error {
 	reader := newSSEReader(src)
 	state := &streamState{
 		toolCallMeta: make(map[int]*streamToolCallMeta),
@@ -17,6 +21,9 @@ func RewriteStream(dst io.Writer, src io.Reader) error {
 	for {
 		frame, err := reader.Next()
 		if frame.raw != "" {
+			if hooks != nil && hooks.OnInputFrame != nil {
+				hooks.OnInputFrame(frame.raw)
+			}
 			if stop, processErr := processStreamFrame(dst, state, frame); processErr != nil {
 				return processErr
 			} else if stop {

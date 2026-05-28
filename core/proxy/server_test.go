@@ -54,7 +54,7 @@ func TestServerBridgesRequestAndNormalizesNonStreamResponse(t *testing.T) {
 	if strings.Contains(requestBody, `"tools"`) {
 		t.Fatalf("expected upstream body to remove native tools, got %s", requestBody)
 	}
-	if !strings.Contains(requestBody, "tool prompt bridge mode") {
+	if !strings.Contains(requestBody, "工具提示桥接模式") {
 		t.Fatalf("expected upstream body to contain bridge prompt, got %s", requestBody)
 	}
 	if !strings.Contains(w.Body.String(), `"reasoning_content":"plan: create a page\nfinal: Create a ZCode page"`) {
@@ -244,5 +244,33 @@ func TestServerPrefersClientAuthorizationWhenConfigured(t *testing.T) {
 	}
 	if authHeader != "Bearer client-key" {
 		t.Fatalf("expected client auth header to win, got %s", authHeader)
+	}
+}
+
+func TestServerProxyModelsWhenNoStaticModelConfigured(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"qwen3.7-max-t","object":"model"}]}`))
+	}))
+	defer upstream.Close()
+
+	server := NewServer(Config{
+		ListenAddr:      ":0",
+		UpstreamBaseURL: upstream.URL + "/v1",
+	}, upstream.Client())
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	w := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"qwen3.7-max-t"`) {
+		t.Fatalf("expected passthrough model list, got %s", w.Body.String())
 	}
 }

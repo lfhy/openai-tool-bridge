@@ -29,6 +29,7 @@
 ```toml
 [server]
 listen = ":8080"
+debug = false
 
 [upstream]
 base_url = "https://api.openai.com/v1"
@@ -61,6 +62,12 @@ timeout_seconds = 300
 - 把 `auth_mode` 设为 `passthrough`，代理会直接转发客户端的 `Authorization`
 - 如果希望“客户端有 key 就用客户端，没有就回退到服务端配置”，使用 `prefer_client`
 
+调试日志：
+
+- 启动时可加 `-debug`
+- 也可以在配置里设置 `server.debug = true`
+- 开启后会输出原始请求、桥接后请求、上游尝试、原始 SSE 帧和改写后 SSE 帧，便于排查“只转写了一半”的问题
+
 ## 启动
 
 ```bash
@@ -72,6 +79,7 @@ make run
 
 ```bash
 go run . -c config.toml
+go run . -c config.toml -debug
 ```
 
 ## 常用命令

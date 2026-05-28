@@ -52,7 +52,7 @@ func TestApplyToolPromptBridge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected message error: %v", err)
 	}
-	if first, _ := msgs[0].Content.(string); !strings.Contains(first, "tool prompt bridge mode") || !strings.Contains(first, "<tool_call>") {
+	if first, _ := msgs[0].Content.(string); !strings.Contains(first, "工具提示桥接模式") || !strings.Contains(first, "<tool_call>") {
 		t.Fatalf("expected bridge prompt in first message, got %q", first)
 	}
 	if content, _ := msgs[2].Content.(string); !strings.Contains(content, "<function=write_file>") {
