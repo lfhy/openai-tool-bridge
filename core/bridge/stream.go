@@ -56,16 +56,37 @@ func RewriteStreamWithHooks(dst io.Writer, src io.Reader, hooks *StreamDebugHook
 	}
 
 	if state.pseudoToolContent.Len() > 0 {
-		chunk := state.template
-		chunk.Choices = []*ChunkChoice{{
-			Index: 0,
-			Delta: Delta{
-				Role:    "assistant",
-				Content: state.pseudoToolContent.String(),
-			},
-		}}
-		if err := writeSSEJSON(dst, chunk); err != nil {
-			return err
+		if retained, parsedCalls, parsed := ExtractPseudoToolCallsFromContent(state.pseudoToolContent.String()); parsed {
+			if strings.TrimSpace(retained) != "" {
+				chunk := state.template
+				chunk.Choices = []*ChunkChoice{{
+					Index: 0,
+					Delta: Delta{
+						Role:    "assistant",
+						Content: retained,
+					},
+				}}
+				if err := writeSSEJSON(dst, chunk); err != nil {
+					return err
+				}
+			}
+			if len(parsedCalls) > 0 {
+				normalizeStreamToolCalls(parsedCalls, state.toolCallMeta)
+				normalizeToolCalls(parsedCalls)
+				state.collectedToolCalls = append(state.collectedToolCalls, parsedCalls...)
+			}
+		} else {
+			chunk := state.template
+			chunk.Choices = []*ChunkChoice{{
+				Index: 0,
+				Delta: Delta{
+					Role:    "assistant",
+					Content: state.pseudoToolContent.String(),
+				},
+			}}
+			if err := writeSSEJSON(dst, chunk); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -202,13 +223,13 @@ func consumeStreamPseudoToolContent(content string, pending *stringBuilder) (str
 		pending.Reset()
 	}
 
-	if retained, calls, parsed := ExtractPseudoToolCallsFromContent(aggregate); parsed {
+	if retained, calls, parsed := ExtractPseudoToolCallsFromStreamingContent(aggregate); parsed {
 		return retained, calls, false
 	}
 	if start := FindPseudoToolCallStart(aggregate); start >= 0 {
 		visiblePrefix := aggregate[:start]
 		suffix := aggregate[start:]
-		if retained, calls, parsed := ExtractPseudoToolCallsFromContent(suffix); parsed {
+		if retained, calls, parsed := ExtractPseudoToolCallsFromStreamingContent(suffix); parsed {
 			return visiblePrefix + retained, calls, false
 		}
 		if LooksLikePseudoToolCallContent(suffix) || LooksLikePseudoToolCallPrefix(suffix) {

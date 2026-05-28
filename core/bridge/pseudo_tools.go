@@ -10,11 +10,19 @@ import (
 var malformedToolArgPattern = regexp.MustCompile(`(?i)(^|[\s\r\n\t])([a-z_][a-z0-9_.-]*)=`)
 
 func ExtractPseudoToolCallsFromContent(content string) (string, []*ToolCall, bool) {
+	return extractPseudoToolCallsFromContent(content, true)
+}
+
+func ExtractPseudoToolCallsFromStreamingContent(content string) (string, []*ToolCall, bool) {
+	return extractPseudoToolCallsFromContent(content, false)
+}
+
+func extractPseudoToolCallsFromContent(content string, allowMalformed bool) (string, []*ToolCall, bool) {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return content, nil, false
 	}
-	if calls, ok := ParsePseudoToolCalls(trimmed); ok {
+	if calls, ok := parsePseudoToolCalls(trimmed, allowMalformed); ok {
 		return "", calls, true
 	}
 
@@ -38,7 +46,7 @@ func ExtractPseudoToolCallsFromContent(content string) (string, []*ToolCall, boo
 	if toolSegment == "" {
 		return content, nil, false
 	}
-	calls, ok := ParsePseudoToolCalls(toolSegment)
+	calls, ok := parsePseudoToolCalls(toolSegment, allowMalformed)
 	if !ok {
 		return content, nil, false
 	}
@@ -46,6 +54,10 @@ func ExtractPseudoToolCallsFromContent(content string) (string, []*ToolCall, boo
 }
 
 func ParsePseudoToolCalls(content string) ([]*ToolCall, bool) {
+	return parsePseudoToolCalls(content, true)
+}
+
+func parsePseudoToolCalls(content string, allowMalformed bool) ([]*ToolCall, bool) {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return nil, false
@@ -62,7 +74,28 @@ func ParsePseudoToolCalls(content string) ([]*ToolCall, bool) {
 	if calls, ok := parseXMLStyleToolCalls(trimmed); ok {
 		return calls, true
 	}
-	if calls, ok := parseMalformedToolCall(trimmed); ok {
+	if allowMalformed {
+		if calls, ok := parseMalformedToolCall(trimmed); ok {
+			return calls, true
+		}
+	}
+	return parseLegacyFunctionCalls(trimmed)
+}
+
+func ParsePseudoToolCallsStreaming(content string) ([]*ToolCall, bool) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return nil, false
+	}
+	if strings.HasPrefix(trimmed, "<Function_Go_Start") {
+		if end := strings.Index(trimmed, "/>"); end >= 0 {
+			trimmed = strings.TrimSpace(trimmed[end+2:])
+		}
+	}
+	if calls, ok := parseToolUseBlocks(trimmed); ok {
+		return calls, true
+	}
+	if calls, ok := parseXMLStyleToolCalls(trimmed); ok {
 		return calls, true
 	}
 	return parseLegacyFunctionCalls(trimmed)
