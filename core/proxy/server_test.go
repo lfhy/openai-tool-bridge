@@ -170,3 +170,79 @@ func TestServerFailsOverAcrossAPIKeys(t *testing.T) {
 		t.Fatalf("expected two upstream attempts, got %d", got)
 	}
 }
+
+func TestServerPassesThroughClientAuthorization(t *testing.T) {
+	var authHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-1",
+			"object":"chat.completion",
+			"created":1,
+			"model":"demo-upstream",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer upstream.Close()
+
+	server := NewServer(Config{
+		ListenAddr:      ":0",
+		UpstreamBaseURL: upstream.URL + "/v1",
+		UpstreamModel:   "demo-upstream",
+		UpstreamAPIKeys: []string{"server-key"},
+		AuthMode:        "passthrough",
+	}, upstream.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer client-key")
+	w := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d body=%s", w.Code, w.Body.String())
+	}
+	if authHeader != "Bearer client-key" {
+		t.Fatalf("expected passthrough auth header, got %s", authHeader)
+	}
+}
+
+func TestServerPrefersClientAuthorizationWhenConfigured(t *testing.T) {
+	var authHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-1",
+			"object":"chat.completion",
+			"created":1,
+			"model":"demo-upstream",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer upstream.Close()
+
+	server := NewServer(Config{
+		ListenAddr:      ":0",
+		UpstreamBaseURL: upstream.URL + "/v1",
+		UpstreamModel:   "demo-upstream",
+		UpstreamAPIKeys: []string{"server-key"},
+		AuthMode:        "prefer_client",
+	}, upstream.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"demo","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer client-key")
+	w := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d body=%s", w.Code, w.Body.String())
+	}
+	if authHeader != "Bearer client-key" {
+		t.Fatalf("expected client auth header to win, got %s", authHeader)
+	}
+}
